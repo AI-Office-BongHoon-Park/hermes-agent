@@ -58,4 +58,25 @@ gemini = GeminiProfile(
     default_aux_model="gemini-3.5-flash",
 )
 
+google_gemini_cli = GeminiProfile(
+    name="google-gemini-cli",
+    aliases=("gemini-oauth",),
+    api_mode="chat_completions",
+    env_vars=(),  # OAuth — no API key
+    base_url="cloudcode-pa://google",  # Cloud Code Assist internal scheme
+    auth_type="oauth_external",
+)
+
+gemini_cli = GeminiProfile(
+    name="gemini-cli",
+    aliases=("gemini-local", "local-gemini-cli"),
+    api_mode="gemini_cli",
+    env_vars=(),  # Local CLI process — Hermes does not read Google API/OAuth credentials.
+    base_url="gemini-cli://local",
+    auth_type="external_process",
+    supports_health_check=False,
+)
+
 register_provider(gemini)
+register_provider(google_gemini_cli)
+register_provider(gemini_cli)

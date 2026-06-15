@@ -269,6 +269,46 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("default") == "gpt-5.4"
         assert model.get("api_mode") == "chat_completions"
 
+    def test_gemini_cli_provider_saved_when_selected(self, config_home):
+        """_model_flow_gemini_cli should persist the local process backend."""
+        from hermes_cli.main import _model_flow_gemini_cli
+        from hermes_cli.config import load_config
+
+        with patch(
+            "hermes_cli.auth.get_external_process_provider_status",
+            return_value={
+                "resolved_command": "/usr/local/bin/gemini",
+                "command": "gemini",
+                "base_url": "gemini-cli://local",
+            },
+        ), patch(
+            "hermes_cli.auth.resolve_external_process_provider_credentials",
+            return_value={
+                "provider": "gemini-cli",
+                "api_key": "gemini-cli",
+                "base_url": "gemini-cli://local",
+                "command": "/usr/local/bin/gemini",
+                "args": [],
+                "source": "process",
+            },
+        ), patch(
+            "hermes_cli.auth._prompt_model_selection",
+            return_value="gemini-3-flash-preview",
+        ), patch(
+            "hermes_cli.auth.deactivate_provider",
+        ):
+            _model_flow_gemini_cli(load_config(), "old-model")
+
+        import yaml
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict), f"model should be dict, got {type(model)}"
+        assert model.get("provider") == "gemini-cli"
+        assert model.get("base_url") == "gemini-cli://local"
+        assert model.get("default") == "gemini-3-flash-preview"
+        assert model.get("api_mode") == "gemini_cli"
+
     def test_opencode_go_models_are_selectable_and_persist_normalized(self, config_home, monkeypatch):
         from hermes_cli.main import _model_flow_api_key_provider
         from hermes_cli.config import load_config
@@ -389,4 +429,3 @@ class TestBaseUrlValidation:
 
         saved = get_env_value("GLM_BASE_URL") or ""
         assert saved == "", "Empty input should not save a base URL"
-

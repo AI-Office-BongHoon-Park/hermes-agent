@@ -1125,6 +1125,7 @@ def run_conversation(
                     agent.provider == "copilot-acp"
                     or str(agent.base_url or "").lower().startswith("acp://copilot")
                     or str(agent.base_url or "").lower().startswith("acp+tcp://")
+                    or agent.api_mode == "gemini_cli"
                 ):
                     _use_streaming = False
                 elif not agent._has_stream_consumers():

@@ -30,6 +30,7 @@ class TestProviderRegistry:
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
+        ("gemini-cli", "Gemini CLI", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
@@ -113,6 +114,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
+        assert PROVIDER_REGISTRY["gemini-cli"].inference_base_url == "gemini-cli://local"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
@@ -218,6 +220,12 @@ class TestResolveProvider:
         assert resolve_provider("GLM") == "zai"
         assert resolve_provider("Z-AI") == "zai"
         assert resolve_provider("Kimi") == "kimi-coding"
+
+    def test_alias_gemini_cli_process_backend(self):
+        assert resolve_provider("gemini-cli") == "gemini-cli"
+        assert resolve_provider("gemini-local") == "gemini-cli"
+        assert resolve_provider("local-gemini-cli") == "gemini-cli"
+        assert resolve_provider("gemini-oauth") == "google-gemini-cli"
 
     def test_alias_github_copilot(self):
         assert resolve_provider("github-copilot") == "copilot"
@@ -683,6 +691,40 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "acp://copilot"
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]
+
+    def test_runtime_gemini_cli_uses_process_runtime(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="gemini-cli")
+
+        assert result["provider"] == "gemini-cli"
+        assert result["api_mode"] == "gemini_cli"
+        assert result["api_key"] == "gemini-cli"
+        assert result["base_url"] == "gemini-cli://local"
+        assert result["command"] == "/usr/local/bin/gemini"
+        assert result["args"] == []
+
+    def test_runtime_gemini_cli_honors_config_command_args(self, monkeypatch):
+        config = {
+            "model": {
+                "provider": "gemini-cli",
+                "default": "gemini-3-flash-preview",
+                "gemini_cli": {"command": "/opt/bin/gemini", "args": ["--sandbox"]},
+            },
+        }
+        monkeypatch.setattr("hermes_cli.runtime_provider._get_model_config", lambda: dict(config["model"]))
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: command)
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="gemini-cli")
+
+        assert result["provider"] == "gemini-cli"
+        assert result["command"] == "/opt/bin/gemini"
+        assert result["args"] == ["--sandbox"]
 
 
 # =============================================================================

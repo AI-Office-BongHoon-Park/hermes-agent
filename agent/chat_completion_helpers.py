@@ -229,6 +229,8 @@ def interruptible_api_call(agent, api_kwargs: dict):
                         invalidate_runtime_client(region)
                     raise
                 result["response"] = normalize_converse_response(raw_response)
+            elif agent.api_mode == "gemini_cli":
+                result["response"] = agent._get_transport().invoke(api_kwargs)
             else:
                 request_client = _set_request_client(
                     agent._create_request_openai_client(
@@ -591,6 +593,18 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens=agent.max_tokens or 4096,
             region=region,
             guardrail_config=guardrail,
+        )
+
+    if agent.api_mode == "gemini_cli":
+        _gt = agent._get_transport()
+        return _gt.build_kwargs(
+            model=agent.model,
+            messages=api_messages,
+            tools=tools_for_api,
+            command=getattr(agent, "acp_command", None),
+            args=getattr(agent, "acp_args", None),
+            cwd=os.getcwd(),
+            timeout=agent._resolved_api_call_timeout(),
         )
 
     if agent.api_mode == "codex_responses":

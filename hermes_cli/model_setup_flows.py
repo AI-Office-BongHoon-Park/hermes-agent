@@ -2,7 +2,7 @@
 
 Extracted from ``hermes_cli/main.py`` as part of the god-file decomposition
 campaign (``~/.hermes/plans/god-file-decomposition.md``, Phase 2 — splitting
-main.py handler/flow bodies out of the module). These 18 ``_model_flow_*``
+main.py handler/flow bodies out of the module). These 19 ``_model_flow_*``
 functions are the interactive provider-setup branches dispatched by
 ``select_provider_and_model`` (which stays in main.py).
 
@@ -632,6 +632,146 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     _save_model_choice(selected)
     _update_config_for_provider("minimax-oauth", creds["base_url"])
     print(f"\u2713 Using MiniMax model: {selected}")
+
+def _model_flow_google_gemini_cli(_config, current_model=""):
+    """Google Gemini OAuth via Cloud Code Assist."""
+    from hermes_cli.auth import (
+        DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+        get_gemini_oauth_auth_status,
+        resolve_gemini_oauth_runtime_credentials,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    print()
+    print("Warning: Google considers using the Gemini CLI OAuth client with")
+    print("third-party software a policy violation. Use the 'gemini' API-key")
+    print("provider for the lowest-risk experience.")
+    print()
+    try:
+        proceed = input("Continue with OAuth login? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("Cancelled.")
+        return
+    if proceed not in {"y", "yes"}:
+        print("Cancelled.")
+        return
+
+    if not get_gemini_oauth_auth_status().get("logged_in"):
+        try:
+            from agent.google_oauth import resolve_project_id_from_env, start_oauth_flow
+
+            start_oauth_flow(
+                force_relogin=True,
+                project_id=resolve_project_id_from_env(),
+            )
+        except Exception as exc:
+            print(f"OAuth login failed: {exc}")
+            return
+
+    try:
+        creds = resolve_gemini_oauth_runtime_credentials(force_refresh=False)
+    except Exception as exc:
+        print(f"Failed to resolve Gemini credentials: {exc}")
+        return
+
+    project_id = creds.get("project_id", "")
+    if project_id:
+        print(f"  Using GCP project: {project_id}")
+    else:
+        print("  No GCP project configured; free tier will be auto-provisioned on first request.")
+
+    models = list(_PROVIDER_MODELS.get("google-gemini-cli") or [])
+    selected = _prompt_model_selection(
+        models,
+        current_model=current_model or (models[0] if models else "gemini-3-flash-preview"),
+        confirm_provider="google-gemini-cli",
+        confirm_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+    )
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+    _update_config_for_provider("google-gemini-cli", DEFAULT_GEMINI_CLOUDCODE_BASE_URL)
+    print(f"Default model set to: {selected} (via Google Gemini OAuth / Code Assist)")
+
+
+def _model_flow_gemini_cli(config, current_model=""):
+    """Gemini CLI local process flow using the installed ``gemini`` command."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+        get_external_process_provider_status,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    del config
+
+    provider_id = "gemini-cli"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = (
+        status.get("resolved_command") or status.get("command") or "gemini"
+    )
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+
+    print("  Gemini CLI delegates Hermes turns to your local `gemini` command.")
+    print("  Hermes does not read Google API keys or OAuth tokens for this backend.")
+    print(f"  Command: {resolved_command}")
+    print(f"  Backend marker: {effective_base}")
+    print()
+
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        print(
+            "  Install Gemini CLI or set model.gemini_cli.command in config.yaml."
+        )
+        return
+
+    effective_base = creds.get("base_url") or effective_base
+    model_list = _PROVIDER_MODELS.get(provider_id, [])
+
+    if model_list:
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+        )
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model["api_mode"] = "gemini_cli"
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
 
 
 def _model_flow_custom(config):

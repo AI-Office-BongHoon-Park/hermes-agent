@@ -76,6 +76,16 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://portal.qwen.ai/v1",
         base_url_env_var="HERMES_QWEN_BASE_URL",
     ),
+    "google-gemini-cli": HermesOverlay(
+        transport="openai_chat",
+        auth_type="oauth_external",
+        base_url_override="cloudcode-pa://google",
+    ),
+    "gemini-cli": HermesOverlay(
+        transport="gemini_cli",
+        auth_type="external_process",
+        base_url_override="gemini-cli://local",
+    ),
     "lmstudio": HermesOverlay(
         transport="openai_chat",
         auth_type="api_key",
@@ -305,6 +315,12 @@ ALIASES: Dict[str, str] = {
     "alibaba-coding": "alibaba-coding-plan",
     "alibaba_coding_plan": "alibaba-coding-plan",
 
+    # Gemini CLI process backend and Google Gemini OAuth + Code Assist.
+    "gemini-cli": "gemini-cli",
+    "gemini-oauth": "google-gemini-cli",
+    "gemini-local": "gemini-cli",
+    "local-gemini-cli": "gemini-cli",
+
     # huggingface
     "hf": "huggingface",
     "hugging-face": "huggingface",
@@ -358,6 +374,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "gemini-cli": "Gemini CLI",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
@@ -377,6 +394,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
     "bedrock_converse": "bedrock_converse",
+    "gemini_cli": "gemini_cli",
 }
 
 
