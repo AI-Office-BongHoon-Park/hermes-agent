@@ -6,7 +6,7 @@
 # Uses uv for desktop/server setup and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   ./setup-hermes.sh
+#   ./setup-hermes.sh [OPTIONS]
 #
 # This script:
 # 1. Detects desktop/server vs Android/Termux setup path
@@ -15,6 +15,7 @@
 # 4. Creates .env from template (if not exists)
 # 5. Symlinks the 'hermes' CLI command into a user-facing bin dir
 # 6. Runs the setup wizard (optional)
+# 7. Optionally installs dev dependencies and runs tests
 # ============================================================================
 
 set -e
@@ -34,6 +35,76 @@ cd "$SCRIPT_DIR"
 export UV_NO_CONFIG=1
 
 PYTHON_VERSION="3.11"
+INSTALL_DEV=false
+RUN_TESTS=false
+SKIP_SETUP=false
+SKIP_RIPGREP=false
+ASSUME_YES=false
+
+usage() {
+    cat <<'EOF'
+Hermes Agent manual setup
+
+Usage:
+  ./setup-hermes.sh [OPTIONS]
+
+Options:
+  --dev           Install developer/test dependencies too (.[all,dev])
+  --run-tests     Run scripts/run_tests.sh after installation
+  --skip-setup    Do not prompt for or run the setup wizard
+  --skip-ripgrep  Do not prompt to install ripgrep
+  -y, --yes       Answer yes to optional prompts
+  -h, --help      Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dev)
+            INSTALL_DEV=true
+            shift
+            ;;
+        --run-tests)
+            RUN_TESTS=true
+            shift
+            ;;
+        --skip-setup)
+            SKIP_SETUP=true
+            shift
+            ;;
+        --skip-ripgrep)
+            SKIP_RIPGREP=true
+            shift
+            ;;
+        -y|--yes)
+            ASSUME_YES=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}✗${NC} Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+prompt_yes_no() {
+    local prompt="$1"
+    if [ "$ASSUME_YES" = true ]; then
+        echo "$prompt [Y/n] y"
+        return 0
+    fi
+    if [ ! -t 0 ]; then
+        return 1
+    fi
+    read -p "$prompt [Y/n] " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]
+}
 
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
@@ -57,6 +128,9 @@ get_command_link_display_dir() {
 
 echo ""
 echo -e "${CYAN}⚕ Hermes Agent Setup${NC}"
+if [ "$INSTALL_DEV" = true ]; then
+    echo -e "${CYAN}→${NC} Developer dependencies enabled"
+fi
 echo ""
 
 # ============================================================================
@@ -194,13 +268,15 @@ if is_termux; then
     export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk 2>/dev/null || printf '%s' "${ANDROID_API_LEVEL:-}")"
     echo -e "${CYAN}→${NC} Termux detected — installing the tested Android bundle"
     "$SETUP_PYTHON" -m pip install --upgrade pip setuptools wheel
+    _TERMUX_SPEC=".[termux]"
+    [ "$INSTALL_DEV" = true ] && _TERMUX_SPEC=".[termux,dev]"
     if [ -f "constraints-termux.txt" ]; then
-        "$SETUP_PYTHON" -m pip install -e ".[termux]" -c constraints-termux.txt || {
+        "$SETUP_PYTHON" -m pip install -e "$_TERMUX_SPEC" -c constraints-termux.txt || {
             echo -e "${YELLOW}⚠${NC} Termux bundle install failed, falling back to base install..."
             "$SETUP_PYTHON" -m pip install -e "." -c constraints-termux.txt
         }
     else
-        "$SETUP_PYTHON" -m pip install -e ".[termux]" || "$SETUP_PYTHON" -m pip install -e "."
+        "$SETUP_PYTHON" -m pip install -e "$_TERMUX_SPEC" || "$SETUP_PYTHON" -m pip install -e "."
     fi
     echo -e "${GREEN}✓${NC} Dependencies installed"
 else
@@ -227,8 +303,10 @@ else
         [ "$_skip" = false ] && _SAFE_EXTRAS+=("$_e")
     done
     _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
+    _PRIMARY_SPEC=".[all]"
+    [ "$INSTALL_DEV" = true ] && _PRIMARY_SPEC=".[all,dev]"
     _try_install() {
-        $UV_CMD pip install -e ".[all]" \
+        $UV_CMD pip install -e "$_PRIMARY_SPEC" \
             || $UV_CMD pip install -e "$_SAFE_SPEC" \
             || $UV_CMD pip install -e "."
     }
@@ -251,7 +329,9 @@ else
         # at first use.
         # Also: stream stderr through directly so the user sees uv's
         # progress UI instead of staring at a frozen prompt.
-        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --extra all --locked; then
+        _sync_args=(sync --extra all --locked)
+        [ "$INSTALL_DEV" = true ] && _sync_args=(sync --extra all --extra dev --locked)
+        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD "${_sync_args[@]}"; then
             echo -e "${GREEN}✓${NC} Dependencies installed (hash-verified via uv.lock)"
         else
             echo -e "${YELLOW}⚠${NC} Lockfile sync failed (see uv output above)."
@@ -275,11 +355,11 @@ echo -e "${CYAN}→${NC} Checking ripgrep (optional, for faster search)..."
 
 if command -v rg &> /dev/null; then
     echo -e "${GREEN}✓${NC} ripgrep found"
+elif [ "$SKIP_RIPGREP" = true ]; then
+    echo -e "${CYAN}→${NC} Skipping ripgrep install (--skip-ripgrep)"
 else
     echo -e "${YELLOW}⚠${NC} ripgrep not found (file search will use grep fallback)"
-    read -p "Install ripgrep for faster search? [Y/n] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+    if prompt_yes_no "Install ripgrep for faster search?"; then
         INSTALLED=false
 
         if is_termux; then
@@ -452,10 +532,14 @@ echo "  hermes cron list     # View scheduled jobs"
 echo "  hermes doctor        # Diagnose issues"
 echo ""
 
-# Ask if they want to run setup wizard now
-read -p "Would you like to run the setup wizard now? [Y/n] " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+if [ "$RUN_TESTS" = true ]; then
+    echo -e "${CYAN}→${NC} Running tests..."
+    "$SCRIPT_DIR/scripts/run_tests.sh"
+fi
+
+if [ "$SKIP_SETUP" = true ]; then
+    echo -e "${CYAN}→${NC} Skipping setup wizard (--skip-setup)"
+elif prompt_yes_no "Would you like to run the setup wizard now?"; then
     echo ""
     # Run directly with venv Python (no activation needed)
     "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup

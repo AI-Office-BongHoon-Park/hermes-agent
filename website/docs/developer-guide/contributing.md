@@ -74,6 +74,24 @@ this way, make sure you run the `hermes` entrypoint from this venv; running the
 system `python3 -m hermes_cli.main` can pick up unrelated system Python
 packages.
 
+The source checkout includes a manual setup script that covers the Python
+environment, editable install, command link, and skill sync steps:
+
+```bash
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+./setup-hermes.sh --dev --skip-setup
+```
+
+Use `--run-tests` when you want the script to run the test suite before it
+returns:
+
+```bash
+./setup-hermes.sh --dev --run-tests --skip-setup --skip-ripgrep
+```
+
+If you need to debug a failed setup step, run the commands manually:
+
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent

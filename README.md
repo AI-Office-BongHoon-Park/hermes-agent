@@ -230,7 +230,13 @@ scripts/run_tests.sh
 ```
 
 Manual clone fallback (for throwaway clones/CI where you intentionally do not
-want the managed install layout):
+want the managed install layout). Scripted path with dev tools and tests:
+
+```bash
+./setup-hermes.sh --dev --run-tests --skip-setup --skip-ripgrep
+```
+
+Fully explicit path (useful when debugging the setup script):
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
