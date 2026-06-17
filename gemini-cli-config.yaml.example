@@ -1,0 +1,48 @@
+# Gemini CLI backend — example config.yaml
+#
+# Copy the relevant blocks into your ~/.hermes/config.yaml (or run with
+# HERMES_HOME pointed at a directory containing this file as config.yaml).
+#
+# This backend shells out to the locally installed `gemini` command and relies
+# on that CLI's own authentication (~/.gemini session). Hermes does NOT resolve
+# any Google OAuth token or API key for it.
+#
+# Requirements:
+#   - @google/gemini-cli installed and on PATH (`gemini --version`)
+#   - The gemini CLI already authenticated (e.g. `gemini` once, oauth-personal)
+
+model:
+  # Default model used when no alias/flag overrides it.
+  default: gemini-2.5-flash
+  provider: gemini-cli
+
+  # Gemini CLI process options. `args` are passed verbatim to `gemini`.
+  #   --skip-trust: required for non-interactive/headless runs in a directory
+  #   the gemini CLI hasn't been told to trust, otherwise it aborts with
+  #   "not running in a trusted directory". Equivalent to exporting
+  #   GEMINI_CLI_TRUST_WORKSPACE=true.
+  gemini_cli:
+    command: gemini          # binary name or absolute path
+    args:
+      - --skip-trust
+
+# Define several models as short aliases → (model, provider) tuples.
+# Switch with `hermes model <alias>`, `/model <alias>` in chat, or --model <alias>.
+model_aliases:
+  flash25:
+    model: gemini-2.5-flash
+    provider: gemini-cli
+  pro25:
+    model: gemini-2.5-pro
+    provider: gemini-cli
+  flash3:
+    model: gemini-3-flash-preview
+    provider: gemini-cli
+  pro3:
+    model: gemini-3-pro-preview
+    provider: gemini-cli
+
+# Note on tool calling: the backend drives tools via a JSON protocol embedded
+# in the prompt. The gemini-*-pro models follow it reliably; gemini-2.5-flash
+# can be inconsistent with tool calls under large system prompts — prefer a pro
+# model for tool-heavy agent work, flash for plain Q&A.
