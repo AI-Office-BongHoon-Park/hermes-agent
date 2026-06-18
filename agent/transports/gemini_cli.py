@@ -62,12 +62,25 @@ def _tool_to_prompt_entry(tool: Dict[str, Any]) -> Dict[str, Any] | None:
 def _messages_to_prompt(
     messages: List[Dict[str, Any]],
     tools: Optional[List[Dict[str, Any]]] = None,
+    *,
+    resumed_session: bool = False,
 ) -> str:
-    lines: list[str] = [
-        "You are running as the model backend for Hermes Agent.",
-        "Answer the latest user request using the conversation transcript below.",
-        "",
-    ]
+    if resumed_session:
+        lines: list[str] = [
+            "You are running as the model backend for Hermes Agent.",
+            "Continue the existing Gemini CLI session for Hermes Agent.",
+            (
+                "Use only the new transcript items below; previous context is "
+                "already in this CLI session."
+            ),
+            "",
+        ]
+    else:
+        lines = [
+            "You are running as the model backend for Hermes Agent.",
+            "Answer the latest user request using the conversation transcript below.",
+            "",
+        ]
     if tools:
         lines.extend(
             [
@@ -82,7 +95,7 @@ def _messages_to_prompt(
                 "",
             ]
         )
-    lines.append("Conversation transcript:")
+    lines.append("New transcript items:" if resumed_session else "Conversation transcript:")
     for msg in messages:
         role = str(msg.get("role") or "user")
         content = _content_to_text(msg.get("content"))
@@ -103,6 +116,42 @@ def _messages_to_prompt(
         lines.append(f"\n[{role}]\n{content}")
     lines.append("\n[assistant]\n")
     return "\n".join(lines)
+
+
+def _stable_cli_session_id(session_id: Any) -> str:
+    raw = str(session_id or "").strip()
+    if not raw:
+        return ""
+    try:
+        return str(uuid.UUID(raw))
+    except (TypeError, ValueError, AttributeError):
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"hermes-agent:gemini-cli:{raw}"))
+
+
+def _latest_replay_start(messages: List[Dict[str, Any]]) -> int:
+    for idx in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[idx], dict) and messages[idx].get("role") == "user":
+            return idx
+    return max(0, len(messages) - 1)
+
+
+def _has_cli_session_arg(argv: list[str]) -> bool:
+    session_flags = {"--resume", "-r", "--session-id", "--session-file"}
+    for arg in argv:
+        if arg in session_flags:
+            return True
+        if any(arg.startswith(flag + "=") for flag in session_flags):
+            return True
+    return False
+
+
+def _is_missing_session_error(text: str) -> bool:
+    lowered = (text or "").lower()
+    return (
+        "invalid session identifier" in lowered
+        or "no previous sessions found" in lowered
+        or "failed to find session" in lowered
+    )
 
 
 def _json_from_stdout(stdout: str) -> Any:
@@ -216,12 +265,19 @@ def _tool_calls_from_protocol(protocol: dict[str, Any]) -> list[ToolCall] | None
 class GeminiCliTransport(ProviderTransport):
     """Run ``gemini --prompt`` in headless mode and normalize its response."""
 
+    def __init__(self) -> None:
+        self._session_state: dict[str, dict[str, Any]] = {}
+
     @property
     def api_mode(self) -> str:
         return "gemini_cli"
 
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> str:
-        return _messages_to_prompt(messages, kwargs.get("tools"))
+        return _messages_to_prompt(
+            messages,
+            kwargs.get("tools"),
+            resumed_session=bool(kwargs.get("resumed_session")),
+        )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> list:
         converted = [_tool_to_prompt_entry(tool) for tool in tools or []]
@@ -235,22 +291,55 @@ class GeminiCliTransport(ProviderTransport):
         **params,
     ) -> Dict[str, Any]:
         converted_tools = self.convert_tools(tools or [])
+        cli_session_id = _stable_cli_session_id(params.get("session_id"))
+        message_count = len(messages or [])
+        resume_start = 0
+        if cli_session_id:
+            state = self._session_state.setdefault(cli_session_id, {})
+            resume_start = int(state.get("sent_count") or 0)
+            if resume_start <= 0 or resume_start > message_count:
+                resume_start = _latest_replay_start(messages or [])
+        resume_messages = list(messages or [])[resume_start:]
         return {
             "model": model,
             "prompt": self.convert_messages(messages, tools=converted_tools),
+            "resume_prompt": self.convert_messages(
+                resume_messages,
+                tools=converted_tools,
+                resumed_session=True,
+            ) if cli_session_id else "",
             "tools": converted_tools,
             "command": params.get("command") or "gemini",
             "args": list(params.get("args") or ()),
             "cwd": params.get("cwd") or os.getcwd(),
             "timeout": params.get("timeout"),
             "output_format": params.get("output_format") or "json",
+            "session_id": cli_session_id,
+            "message_count": message_count,
         }
+
+    def _run_cli(
+        self,
+        argv: list[str],
+        api_kwargs: Dict[str, Any],
+        prompt: str,
+    ) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            argv,
+            input=prompt,
+            text=True,
+            capture_output=True,
+            cwd=api_kwargs.get("cwd") or None,
+            timeout=api_kwargs.get("timeout") or None,
+            check=False,
+        )
 
     def invoke(self, api_kwargs: Dict[str, Any]) -> Dict[str, Any]:
         command = api_kwargs.get("command") or "gemini"
         args = list(api_kwargs.get("args") or [])
         model = str(api_kwargs.get("model") or "").strip()
         output_format = str(api_kwargs.get("output_format") or "json").strip()
+        cli_session_id = str(api_kwargs.get("session_id") or "").strip()
 
         argv = [command, *args]
         if model and "--model" not in argv and "-m" not in argv:
@@ -261,15 +350,28 @@ class GeminiCliTransport(ProviderTransport):
             argv.extend(["--prompt", ""])
 
         try:
-            completed = subprocess.run(
-                argv,
-                input=api_kwargs.get("prompt") or "",
-                text=True,
-                capture_output=True,
-                cwd=api_kwargs.get("cwd") or None,
-                timeout=api_kwargs.get("timeout") or None,
-                check=False,
-            )
+            auto_session = bool(cli_session_id) and not _has_cli_session_arg(argv)
+            used_resume = False
+            if auto_session:
+                resume_argv = [*argv, "--resume", cli_session_id]
+                completed = self._run_cli(
+                    resume_argv,
+                    api_kwargs,
+                    api_kwargs.get("resume_prompt") or api_kwargs.get("prompt") or "",
+                )
+                used_resume = completed.returncode == 0
+                if completed.returncode != 0 and _is_missing_session_error(
+                    "\n".join([completed.stderr or "", completed.stdout or ""])
+                ):
+                    create_argv = [*argv, "--session-id", cli_session_id]
+                    completed = self._run_cli(
+                        create_argv,
+                        api_kwargs,
+                        api_kwargs.get("prompt") or "",
+                    )
+                    used_resume = False
+            else:
+                completed = self._run_cli(argv, api_kwargs, api_kwargs.get("prompt") or "")
         except FileNotFoundError as exc:
             raise RuntimeError(
                 f"Gemini CLI command not found: {command!r}. Install @google/gemini-cli "
@@ -287,11 +389,27 @@ class GeminiCliTransport(ProviderTransport):
         data = _json_from_stdout(completed.stdout)
         if isinstance(data, dict):
             data.setdefault("_stderr", completed.stderr or "")
+            if cli_session_id:
+                data.setdefault("_hermes_gemini_cli_session_id", cli_session_id)
+                data.setdefault("_hermes_message_count", api_kwargs.get("message_count") or 0)
+                data.setdefault("_hermes_used_resume", used_resume)
             return data
-        return {"response": str(data), "_stderr": completed.stderr or ""}
+        response = {"response": str(data), "_stderr": completed.stderr or ""}
+        if cli_session_id:
+            response["_hermes_gemini_cli_session_id"] = cli_session_id
+            response["_hermes_message_count"] = api_kwargs.get("message_count") or 0
+            response["_hermes_used_resume"] = used_resume
+        return response
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
+        session_id = ""
+        message_count = 0
         if isinstance(response, dict):
+            session_id = str(response.get("_hermes_gemini_cli_session_id") or "")
+            try:
+                message_count = int(response.get("_hermes_message_count") or 0)
+            except (TypeError, ValueError):
+                message_count = 0
             content = response.get("response")
             if content is None:
                 content = response.get("text") or response.get("content") or ""
@@ -302,7 +420,15 @@ class GeminiCliTransport(ProviderTransport):
             usage = _usage_from_stats(response.get("stats"))
             provider_data = {
                 k: v for k, v in response.items()
-                if k not in {"response", "text", "content", "stats", "tool_calls"}
+                if k not in {
+                    "response",
+                    "text",
+                    "content",
+                    "stats",
+                    "tool_calls",
+                    "_hermes_gemini_cli_session_id",
+                    "_hermes_message_count",
+                }
             } or None
             if protocol and tool_calls:
                 protocol_content = (
@@ -340,6 +466,10 @@ class GeminiCliTransport(ProviderTransport):
                 finish_reason = "stop"
             usage = None
             provider_data = None
+        if session_id and message_count > 0:
+            state = self._session_state.setdefault(session_id, {})
+            state["sent_count"] = max(int(state.get("sent_count") or 0), message_count + 1)
+            state["created"] = True
         return NormalizedResponse(
             content=str(content or ""),
             tool_calls=tool_calls,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import UUID
 
 from agent.transports.gemini_cli import GeminiCliTransport
 
@@ -128,3 +129,80 @@ def test_gemini_cli_transport_accepts_plain_text(monkeypatch):
     normalized = transport.normalize_response(raw)
 
     assert normalized.content == "plain answer"
+
+
+def test_gemini_cli_transport_resumes_or_creates_session(monkeypatch):
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if "--resume" in argv:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr='Invalid session identifier "missing"',
+            )
+        return SimpleNamespace(
+            returncode=0,
+            stdout='{"response":"created"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr("agent.transports.gemini_cli.subprocess.run", _fake_run)
+
+    transport = GeminiCliTransport()
+    api_kwargs = transport.build_kwargs(
+        model="gemini-3-flash-preview",
+        messages=[
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "First turn"},
+        ],
+        command="/usr/local/bin/gemini",
+        session_id="hermes-session-a",
+    )
+    raw = transport.invoke(api_kwargs)
+    normalized = transport.normalize_response(raw)
+
+    assert normalized.content == "created"
+    assert len(calls) == 2
+    assert "--resume" in calls[0][0]
+    assert "--session-id" in calls[1][0]
+    assert UUID(calls[0][0][-1]) == UUID(calls[1][0][-1])
+    assert "Conversation transcript:" in calls[1][1]["input"]
+    assert "First turn" in calls[1][1]["input"]
+
+
+def test_gemini_cli_transport_resume_prompt_sends_only_new_items_after_first_call():
+    transport = GeminiCliTransport()
+    session_id = "hermes-session-b"
+    first_kwargs = transport.build_kwargs(
+        model="gemini-3-flash-preview",
+        messages=[
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "First turn"},
+        ],
+        session_id=session_id,
+    )
+    transport.normalize_response(
+        {
+            "response": "First answer",
+            "_hermes_gemini_cli_session_id": first_kwargs["session_id"],
+            "_hermes_message_count": first_kwargs["message_count"],
+        }
+    )
+
+    second_kwargs = transport.build_kwargs(
+        model="gemini-3-flash-preview",
+        messages=[
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "First turn"},
+            {"role": "assistant", "content": "First answer"},
+            {"role": "user", "content": "Second turn"},
+        ],
+        session_id=session_id,
+    )
+
+    assert "New transcript items:" in second_kwargs["resume_prompt"]
+    assert "Second turn" in second_kwargs["resume_prompt"]
+    assert "First turn" not in second_kwargs["resume_prompt"]
+    assert "First answer" not in second_kwargs["resume_prompt"]

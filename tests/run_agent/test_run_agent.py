@@ -1546,6 +1546,19 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
 
+    def test_gemini_cli_kwargs_include_session_id(self, agent):
+        agent.api_mode = "gemini_cli"
+        agent.provider = "gemini-cli"
+        agent.model = "gemini-3-flash-preview"
+        agent.session_id = "hermes-cli-session"
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["session_id"]
+        assert kwargs["message_count"] == 1
+        assert "hi" in kwargs["prompt"]
+
     def test_public_moonshot_kimi_k2_5_omits_temperature(self, agent):
         """Kimi models should NOT have client-side temperature overrides.
 

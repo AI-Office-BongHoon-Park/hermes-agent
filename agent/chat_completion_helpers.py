@@ -605,6 +605,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             args=getattr(agent, "acp_args", None),
             cwd=os.getcwd(),
             timeout=agent._resolved_api_call_timeout(),
+            session_id=getattr(agent, "session_id", None),
         )
 
     if agent.api_mode == "codex_responses":
